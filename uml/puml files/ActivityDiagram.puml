@@ -1,0 +1,134 @@
+' ============================================================================
+' ARGUS — Diagram aktywności (Activity Diagram)
+' ============================================================================
+' OPIS:
+' Diagram przedstawia pełny przepływ pojedynczego przebiegu testowego
+' (TestExecution) — od wyzwolenia (harmonogram lub ręcznie) przez otwarcie
+' raportu, wielowarstwową strategię ekstrakcji wartości KPI (fallback opisany
+' w 00_Technical_Feasibility_Study.md, sekcja 7), walidację SQL i reguł
+' biznesowych, aż po zapis wyniku, opcjonalną analizę AI i powiadomienie.
+'
+' UZASADNIENIE PROJEKTOWE:
+' Diagram celowo eksponuje jako osobną, wczesną decyzję "Czy raport dostępny
+' i wyrenderowany poprawnie?" — rozdzielenie testu dostępności/renderowania
+' od testu wartości KPI odzwierciedla wymóg NFR-A-04 (odróżnienie awarii
+' platformy od błędu danych, aby uniknąć fałszywych alarmów o "błędnym
+' raporcie", gdy w rzeczywistości to platforma BI jest niedostępna).
+' Pętla wielowarstwowego fallbacku ekstrakcji jest modelowana jako aktywność
+' strukturalna z decyzjami sekwencyjnymi (a nie jedna aktywność "wyodrębnij
+' wartość"), aby jawnie pokazać zespołowi deweloperskiemu kolejność strategii
+' i punkty, w których ustalany jest Confidence Score — kluczowe dla
+' implementacji Value Extraction Engine zgodnie z 00_Technical_Feasibility_
+' Study.md.
+' Wywołanie AI Analysis Engine jest umieszczone jako aktywność równoległa
+' (fork) względem zapisu wyniku i wysłania powiadomienia podstawowego,
+' odzwierciedlając architektoniczną zasadę non-blocking z 06_AI_Module.md,
+' sekcja 5.1 — niedostępność AI nie wstrzymuje zapisu wyniku testu.
+' ============================================================================
+
+@startuml ActivityDiagram
+
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 11
+skinparam activity {
+  BackgroundColor #EAF2F8
+  BorderColor #2C3E50
+  DiamondBackgroundColor #FCF3CF
+  DiamondBorderColor #7D6608
+}
+skinparam ArrowColor #2C3E50
+
+title ARGUS — Przebieg pojedynczego testu raportu (TestExecution)
+
+start
+
+split
+  :Scheduler: nadszedł czas\nwg schedule_cron;
+split again
+  :Użytkownik: ręczne uruchomienie\n(UC-08);
+end split
+
+:Test Orchestrator pobiera\naktywny Validation Profile;
+
+if (Profil ma zdefiniowany\nco najmniej 1 test?\n(FR-011)) then (nie)
+  :Odrzuć — brak testów\nzdefiniowanych dla raportu;
+  stop
+else (tak)
+endif
+
+:ConnectorFactory wybiera connector\nwg platform_type (PowerBIConnector /\nSSRSConnector);
+
+:Connector: otwórz raport\n(Browser Automation Engine);
+
+if (Raport dostępny\ni poprawnie wyrenderowany?) then (nie)
+  :Status: PLATFORM_UNAVAILABLE\n(NFR-A-04 — odróżnienie od\nbłędu danych);
+  :Zapisz TestExecution\n(status techniczny);
+  :Powiadom wg reguł eskalacji\n(jeśli przekroczony próg);
+  stop
+else (tak)
+endif
+
+partition "Value Extraction Engine — łańcuch fallback" {
+  :Warstwa 0: Native API /\nmodel danych (XMLA/DAX,\nSSRS dataset);
+  if (Dostępne i sukces?) then (tak)
+    :Confidence: bardzo wysoki;
+  else (nie)
+    :Warstwa 1: DOM Analysis +\nAccessibility Tree;
+    if (Element trafiony\njednoznacznie?) then (tak)
+      :Confidence: wysoki;
+    else (nie)
+      :Warstwa 1b: Eksport\nstrukturalny (CSV/XML);
+      if (Sukces?) then (tak)
+        :Confidence: wysoki;
+      else (nie)
+        :Warstwa 2: Computer Vision\n(template/region matching);
+        if (Sukces?) then (tak)
+          :Confidence: średni;
+        else (nie)
+          :Warstwa 3: OCR na zrzucie\nekranu regionu;
+          if (Odczytano wartość\nzgodną z formatem liczby?) then (tak)
+            :Confidence: niski\n+ flaga "wymaga przeglądu";
+          else (nie)
+            :Status: EXTRACTION_FAILED;
+            :Zgłoś alert +\nzadanie przeglądu manualnego;
+            stop
+          endif
+        endif
+      endif
+    endif
+  endif
+}
+
+:SQL Validation Engine: wykonaj\nzapytanie SQL na hurtowni danych;
+
+:Business Rule Engine: wykonaj\nreguły biznesowe zdefiniowane\nw profilu;
+
+:Validation Engine: porównaj\nwartość raportu z wynikiem SQL\nw granicach tolerancji;
+
+:Validation Engine: agreguj\nwyniki testów → status\nPASS / FAIL / WARNING;
+
+:Zapisz TestExecution + TestResult\nw Results Repository;
+
+fork
+  :Audit & Logging: zarejestruj\nzdarzenie wykonania;
+fork again
+  if (Status = PASS\ni brak anomalii historycznej?) then (tak)
+    :Pomiń wywołanie AI\n(optymalizacja kosztowa,\n09_Python_Architecture.md);
+  else (nie)
+    :AI Analysis Engine: zbuduj\nkontekst i wygeneruj\nwyjaśnienie (evidence-based);
+    :Zapisz AIInsight\n(nie modyfikuje statusu testu);
+  endif
+fork again
+  if (Status != PASS?) then (tak)
+    :Notification Service: wyślij\npowiadomienie wg reguł\n(z deduplikacją);
+  else (nie)
+  endif
+end fork
+
+:Aktualizuj HealthScoreSnapshot\ndla raportu;
+
+stop
+
+@enduml

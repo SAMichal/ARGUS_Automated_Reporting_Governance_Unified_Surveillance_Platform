@@ -1,0 +1,141 @@
+' ============================================================================
+' ARGUS — Diagram komponentów (Component Diagram)
+' ============================================================================
+' OPIS:
+' Diagram przedstawia wszystkie 17 głównych modułów systemu zdefiniowanych
+' w 03_Architecture.md, sekcja 4, pogrupowanych wg warstw Clean Architecture
+' (Presentation / Application / Domain / Infrastructure), wraz z ich
+' zależnościami oraz systemami zewnętrznymi (Platforma BI — Power BI i SSRS,
+' hurtownia danych, opcjonalny dostawca modelu AI).
+'
+' UZASADNIENIE PROJEKTOWE:
+' Grupowanie komponentów w ramki odpowiadające warstwom architektonicznym
+' (a nie płaski graf) jest celowe — pozwala natychmiast zweryfikować wizualnie
+' zgodność z regułą zależności Clean Architecture: żadna strzałka nie powinna
+' prowadzić z warstwy wewnętrznej (Domain) do warstwy zewnętrznej
+' (Infrastructure/Presentation). Moduły cross-cutting (Audit & Logging,
+' Monitoring) są celowo umieszczone poza głównym stosem warstw i połączone
+' z każdym modułem, aby podkreślić ich przekrojowy charakter (03_Architecture.md,
+' sekcja 5) — nie są częścią żadnej pojedynczej warstwy sensu stricto.
+' Systemy zewnętrzne (Power BI, SSRS, Hurtownia danych, Azure OpenAI) są
+' pokazane jako komponenty poza granicą systemu ARGUS, połączone wyłącznie
+' z odpowiednimi adapterami infrastruktury — żaden komponent domenowy ani
+' aplikacyjny nie ma bezpośredniej zależności od świata zewnętrznego,
+' zgodnie z Dependency Inversion Principle.
+' ============================================================================
+
+@startuml ComponentDiagram
+
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 11
+skinparam component {
+  BackgroundColor #EAF2F8
+  BorderColor #2C3E50
+}
+skinparam database {
+  BackgroundColor #FCF3CF
+  BorderColor #7D6608
+}
+skinparam cloud {
+  BackgroundColor #FDEDEC
+  BorderColor #943126
+}
+skinparam ArrowColor #2C3E50
+skinparam packageStyle rectangle
+
+package "PRESENTATION LAYER" #F4F6F7 {
+  [Dashboard\n(Web GUI)] as Dashboard
+  [REST API\n(FastAPI)] as API
+  [Notification\nService] as Notify
+}
+
+package "APPLICATION LAYER" #EBF5FB {
+  [Scheduler] as Scheduler
+  [Test\nOrchestrator] as Orchestrator
+  [AI Analysis\nEngine] as AIEngine
+}
+
+package "DOMAIN LAYER" #EAFAF1 {
+  [Validation\nEngine] as ValidEngine
+  [Business Rule\nEngine] as RuleEngine
+  [Test Definition\nEngine] as TestDefEngine
+}
+
+package "INFRASTRUCTURE LAYER" #FEF9E7 {
+  [Report Platform\nConnector Layer] as ConnectorLayer
+  [Browser Automation\nEngine] as BrowserEngine
+  [Value Extraction\nEngine] as ExtractEngine
+  [SQL Validation\nEngine] as SqlEngine
+  [Configuration\nRepository] as ConfigRepo
+  [Validation Profile\nRepository] as ProfileRepo
+  [Results\nRepository] as ResultsRepo
+}
+
+package "CROSS-CUTTING" #F2F3F4 {
+  [Audit & Logging] as Audit
+  [Monitoring] as Monitoring
+}
+
+cloud "Platforma BI" {
+  [Power BI\n(pbi.bank.com.pl)] as PBI
+  [SSRS / Report Server\n(bgkssrs)] as SSRS
+}
+
+database "Hurtownia\ndanych" as DWH
+cloud "Dostawca modelu AI\n(Azure OpenAI / on-prem)" as AIProvider
+
+' --- Relacje główne ---
+Dashboard --> API : REST/JSON
+API --> Orchestrator
+API --> ProfileRepo : CRUD profili
+API --> ConfigRepo : katalog raportów
+API --> ResultsRepo : odczyt wyników
+API --> Audit : log żądań administracyjnych
+
+Scheduler --> Orchestrator : trigger (schedule_cron)
+Scheduler --> ProfileRepo : odczyt harmonogramów
+
+Orchestrator --> ConnectorLayer
+Orchestrator --> ExtractEngine
+Orchestrator --> ValidEngine
+Orchestrator --> ResultsRepo
+Orchestrator ..> AIEngine : (async, non-blocking)
+Orchestrator --> Notify : (gdy status != PASS)
+
+TestDefEngine --> ProfileRepo
+
+ConnectorLayer --> BrowserEngine
+ConnectorLayer --> PBI : Browser Automation +\nPower BI REST API / XMLA
+ConnectorLayer --> SSRS : Browser Automation +\nSSRS Web Services
+
+ExtractEngine --> ConnectorLayer : (odczyt po renderowaniu)
+
+ValidEngine --> RuleEngine
+ValidEngine --> SqlEngine
+SqlEngine --> DWH : zapytania parametryzowane\n(konto techniczne, least privilege)
+
+AIEngine --> ResultsRepo : READ ONLY (historia, kontekst)
+AIEngine --> AIProvider : wywołanie modelu\n(LangChain orchestration)
+AIEngine ..> Notify
+
+Dashboard ..> Monitoring : widok metryk (admin)
+
+' --- Cross-cutting: powiązania z każdym modułem operacyjnym ---
+Orchestrator ..> Audit
+Orchestrator ..> Monitoring
+ConnectorLayer ..> Monitoring
+ExtractEngine ..> Monitoring
+SqlEngine ..> Monitoring
+ValidEngine ..> Audit
+ProfileRepo ..> Audit : każda zmiana profilu
+
+note bottom of ConnectorLayer
+  Jedyne miejsce w systemie znające specyfikę
+  platformy raportowej. Dodanie nowej platformy
+  (Open/Closed) = nowy komponent w tym pakiecie,
+  bez zmian w Application/Domain Layer.
+end note
+
+@enduml

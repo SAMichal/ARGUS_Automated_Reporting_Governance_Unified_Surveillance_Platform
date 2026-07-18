@@ -1,0 +1,308 @@
+' ============================================================================
+' ARGUS — Diagram klas (Class Diagram)
+' ============================================================================
+' OPIS:
+' Diagram prezentuje dwa powiązane obszary modelu obiektowego:
+' (1) Model domenowy (encje z 07_Data_Model.md) wraz z relacjami i kluczowymi
+'     metodami domenowymi (np. ValidationProfile.activate(), TestExecution
+'     agregujący TestResult);
+' (2) Warstwę portów i adapterów (Ports & Adapters) realizującą Connector
+'     Pattern oraz Strategy Pattern opisane w 03_Architecture.md, sekcja 3 —
+'     interfejsy IReportConnector i IExtractionStrategy wraz z konkretnymi
+'     implementacjami dla Power BI i SSRS.
+'
+' UZASADNIENIE PROJEKTOWE:
+' Interfejsy IReportConnector oraz IExtractionStrategy są celowo umieszczone
+' w warstwie Domain (jako porty), a ich implementacje (PowerBIConnector,
+' SSRSConnector, DomAnalysisStrategy, itd.) w warstwie Infrastructure —
+' zgodnie z zasadą Dependency Inversion (SOLID) oraz regułą zależności
+' Clean Architecture (03_Architecture.md, sekcja 2): zależność wskazuje
+' zawsze "do wewnątrz", TestOrchestrator zależy od abstrakcji IReportConnector,
+' nigdy od konkretnej klasy PowerBIConnector.
+' ConnectorFactory realizuje wzorzec Registry + Factory (03_Architecture.md,
+' sekcja 1.5) — dodanie nowej platformy (np. TableauConnector) wymaga
+' wyłącznie nowej klasy implementującej IReportConnector i wpisu w fabryce,
+' bez zmian w TestOrchestrator (Open/Closed Principle), co ten diagram
+' odzwierciedla brakiem jakiejkolwiek zależności TestOrchestrator →
+' konkretna implementacja connectora.
+' Kompozycja ValidationProfile *-- TestDefinition (a nie zwykła asocjacja)
+' podkreśla, że testy nie mają sensu bytu poza swoim profilem — usunięcie/
+' wersjonowanie profilu pociąga za sobą cykl życia testów.
+' ============================================================================
+
+@startuml ClassDiagram
+
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 11
+skinparam classFontStyle bold
+skinparam class {
+  BackgroundColor #EAF2F8
+  BorderColor #2C3E50
+  ArrowColor #2C3E50
+}
+skinparam interface {
+  BackgroundColor #FCF3CF
+  BorderColor #7D6608
+}
+skinparam packageStyle rectangle
+
+package "Domain — Model (07_Data_Model.md)" {
+
+  class BusinessArea {
+    +id: UUID
+    +name: str
+    +description: str
+    +owner: str
+  }
+
+  class Report {
+    +id: UUID
+    +name: str
+    +platform_type: PlatformType
+    +url: str
+    +owner: str
+    +is_active: bool
+    +created_at: datetime
+  }
+
+  enum PlatformType {
+    POWER_BI
+    SSRS
+  }
+
+  class ValidationProfile {
+    +id: UUID
+    +version: int
+    +is_active: bool
+    +schedule_cron: str
+    +created_by: UUID
+    +created_at: datetime
+    +activate(): void
+    +addTestDefinition(td: TestDefinition): void
+  }
+
+  class TestDefinition {
+    +id: UUID
+    +name: str
+    +type: TestType
+    +extraction_config: JSON
+    +tolerance_abs: Decimal
+    +tolerance_pct: Decimal
+    +is_active: bool
+  }
+
+  enum TestType {
+    SQL_COMPARISON
+    FIELD_VALUE
+    BUSINESS_RULE
+    AVAILABILITY
+  }
+
+  class SqlValidationQuery {
+    +id: UUID
+    +sql_text: str
+    +data_source_ref: str
+    +expected_result_mapping: JSON
+  }
+
+  class BusinessRule {
+    +id: UUID
+    +rule_type: RuleType
+    +configuration: JSON
+    +evaluate(context: RuleContext): RuleResult
+  }
+
+  enum RuleType {
+    SUM_CHECK
+    RANGE_CHECK
+    TREND_DEVIATION
+    NON_NEGATIVE
+  }
+
+  class TestExecution {
+    +id: UUID
+    +triggered_by: str
+    +started_at: datetime
+    +finished_at: datetime
+    +overall_status: TestStatus
+    +platform_availability_status: str
+    +addResult(r: TestResult): void
+    +aggregateStatus(): TestStatus
+  }
+
+  class TestResult {
+    +id: UUID
+    +status: TestStatus
+    +report_value: str
+    +sql_value: str
+    +deviation_abs: Decimal
+    +deviation_pct: Decimal
+    +extraction_method: str
+    +confidence_score: float
+    +raw_evidence_ref: str
+  }
+
+  enum TestStatus {
+    PASS
+    FAIL
+    WARNING
+    ERROR
+  }
+
+  class HealthScoreSnapshot {
+    +id: UUID
+    +snapshot_date: date
+    +health_score: float
+    +pass_count: int
+    +fail_count: int
+    +warning_count: int
+  }
+
+  class AIInsight {
+    +id: UUID
+    +explanation: str
+    +evidence: JSON
+    +probable_causes: list
+    +suggested_actions: list
+    +cluster_id: UUID
+    +model_version: str
+    +prompt_version: str
+    +user_feedback: str
+  }
+
+  class Notification {
+    +id: UUID
+    +channel: str
+    +recipient: str
+    +sent_at: datetime
+    +status: str
+  }
+
+  class User {
+    +id: UUID
+    +username: str
+    +email: str
+    +role: Role
+  }
+
+  enum Role {
+    ADMINISTRATOR
+    ANALYST_OWNER
+    VIEWER
+  }
+
+  class AuditLogEntry {
+    +id: UUID
+    +actor_id: UUID
+    +action: str
+    +entity_type: str
+    +entity_id: UUID
+    +before_state: JSON
+    +after_state: JSON
+    +timestamp: datetime
+  }
+
+  BusinessArea "1" o-- "N" Report
+  Report "1" *-- "N" ValidationProfile
+  ValidationProfile "1" *-- "N" TestDefinition
+  TestDefinition "1" o-- "0..1" SqlValidationQuery
+  TestDefinition "1" o-- "0..1" BusinessRule
+  Report "1" -- "N" TestExecution
+  ValidationProfile "1" -- "N" TestExecution
+  TestExecution "1" *-- "N" TestResult
+  TestDefinition "1" -- "N" TestResult
+  TestExecution "1" -- "0..N" AIInsight
+  TestExecution "1" -- "0..N" Notification
+  Report "1" -- "N" HealthScoreSnapshot
+  User "1" -- "N" ValidationProfile : created_by
+  User "1" -- "N" AuditLogEntry : actor
+  Report --> PlatformType
+  TestDefinition --> TestType
+  TestResult --> TestStatus
+  BusinessRule --> RuleType
+  User --> Role
+}
+
+package "Domain — Ports (interfejsy, 03_Architecture.md)" {
+  interface IReportConnector {
+    +check_availability(ref: ReportReference): AvailabilityResult
+    +open_report(ref: ReportReference): RenderedReportHandle
+    +list_catalog(): List<ReportMetadata>
+  }
+
+  interface IExtractionStrategy {
+    +extract(handle: RenderedReportHandle, config: JSON): ExtractedValue
+  }
+
+  class ExtractedValue {
+    +value: str
+    +confidence_score: float
+    +method_used: str
+    +raw_evidence: bytes
+  }
+
+  IExtractionStrategy ..> ExtractedValue : produces
+}
+
+package "Infrastructure — Adaptery (implementacje)" {
+  class PowerBIConnector implements IReportConnector {
+    -browserEngine: BrowserAutomationEngine
+    -restApiClient: PowerBIRestClient
+  }
+  class SSRSConnector implements IReportConnector {
+    -browserEngine: BrowserAutomationEngine
+    -soapClient: SSRSWebServiceClient
+  }
+  class ConnectorFactory {
+    -registry: Map<PlatformType, IReportConnector>
+    +getConnector(type: PlatformType): IReportConnector
+    +register(type: PlatformType, connector: IReportConnector): void
+  }
+
+  class DomAnalysisStrategy implements IExtractionStrategy
+  class NativeApiStrategy implements IExtractionStrategy
+  class StructuredExportStrategy implements IExtractionStrategy
+  class ComputerVisionStrategy implements IExtractionStrategy
+  class OcrStrategy implements IExtractionStrategy
+
+  ConnectorFactory ..> PowerBIConnector : creates
+  ConnectorFactory ..> SSRSConnector : creates
+}
+
+package "Application — Orkiestracja" {
+  class TestOrchestrator {
+    -connectorFactory: ConnectorFactory
+    -extractionChain: List<IExtractionStrategy>
+    -validationEngine: ValidationEngine
+    +runTestExecution(profile: ValidationProfile): TestExecution
+  }
+
+  class ValidationEngine {
+    +evaluate(results: List<TestResult>, profile: ValidationProfile): TestStatus
+  }
+
+  class BusinessRuleEngine {
+    +evaluate(rule: BusinessRule, context: RuleContext): RuleResult
+  }
+
+  TestOrchestrator ..> IReportConnector : uses (via factory)
+  TestOrchestrator ..> IExtractionStrategy : uses (chain)
+  TestOrchestrator --> ValidationEngine
+  ValidationEngine --> BusinessRuleEngine
+  TestOrchestrator ..> TestExecution : creates
+}
+
+note as N1
+  TestOrchestrator zależy WYŁĄCZNIE od interfejsów
+  IReportConnector i IExtractionStrategy — nigdy od
+  PowerBIConnector czy SSRSConnector wprost.
+  Dodanie TableauConnector (Open/Closed Principle,
+  03_Architecture.md sekcja 6) nie wymaga zmiany
+  w tej klasie.
+end note
+
+TestOrchestrator .. N1
+
+@enduml

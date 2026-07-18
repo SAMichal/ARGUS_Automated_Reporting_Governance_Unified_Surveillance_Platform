@@ -1,0 +1,136 @@
+' ============================================================================
+' ARGUS — Diagram wdrożenia (Deployment Diagram)
+' ============================================================================
+' OPIS:
+' Diagram przedstawia fizyczną/logiczną topologię infrastruktury opisaną w
+' 10_Deployment.md, sekcja 2 — węzły Kubernetes (API, GUI, Celery Workers),
+' warstwę danych (PostgreSQL, Redis), warstwę obserwowalności (Prometheus,
+' Grafana, OpenTelemetry Collector), magazyn sekretów oraz systemy zewnętrzne
+' (Platforma BI, hurtownia danych, opcjonalny dostawca AI), wraz z granicami
+' segmentacji sieciowej.
+'
+' UZASADNIENIE PROJEKTOWE:
+' Węzeł "Segment sieci — Worker Zone" jest celowo wyodrębniony jako osobna
+' granica (boundary) obejmująca wyłącznie Celery Workers — odzwierciedla
+' wymóg NFR-SEC-08 (segmentacja sieciowa, dostęp workerów ograniczony
+' wyłącznie do Platformy BI i hurtowni danych). API i GUI są w osobnym
+' segmencie, bez bezpośredniego dostępu do Platformy BI — cały ruch do
+' zewnętrznych systemów raportowych przechodzi wyłącznie przez warstwę
+' workerów, co minimalizuje powierzchnię ataku zgodnie z zasadą
+' defense-in-depth. Magazyn sekretów jest połączony wyłącznie z węzłami,
+' które faktycznie potrzebują poświadczeń w runtime (Workers — konto
+' techniczne; API — connection string do bazy), nigdy z GUI (statyczne
+' pliki, brak dostępu do sekretów backendu) — obrazuje zasadę least
+' privilege również na poziomie infrastruktury, nie tylko kont użytkowników.
+' ============================================================================
+
+@startuml DeploymentDiagram
+
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 11
+skinparam node {
+  BackgroundColor #EAF2F8
+  BorderColor #2C3E50
+}
+skinparam database {
+  BackgroundColor #FCF3CF
+  BorderColor #7D6608
+}
+skinparam cloud {
+  BackgroundColor #FDEDEC
+  BorderColor #943126
+}
+skinparam artifact {
+  BackgroundColor #EAFAF1
+  BorderColor #196F3D
+}
+skinparam ArrowColor #2C3E50
+
+title ARGUS — Diagram wdrożenia (infrastruktura on-prem organizacji)
+
+node "Reverse Proxy /\nLoad Balancer\n(organizacyjny)" as LB
+
+package "Segment sieci — Aplikacyjny\n(DMZ wewnętrzna)" {
+  node "Kubernetes — API Pods\n(N replik, autoscaling)" as APIPods {
+    artifact "argus-api\n(FastAPI, Uvicorn)" as APIArtifact
+  }
+  node "Static Hosting /\nKubernetes — GUI Pods" as GUIPods {
+    artifact "argus-ui\n(React SPA, build statyczny)" as GUIArtifact
+  }
+  node "Kubernetes — Scheduler Pod\n(1 replika, leader election)" as SchedulerPod {
+    artifact "argus-scheduler\n(APScheduler)" as SchedulerArtifact
+  }
+}
+
+package "Segment sieci — Worker Zone\n(ograniczony dostęp — NFR-SEC-08)" {
+  node "Kubernetes — Worker Pods\n(M replik, autoscaling wg\ngłębokości kolejki)" as WorkerPods {
+    artifact "argus-worker\n(Celery + Playwright,\nchromium headless)" as WorkerArtifact
+  }
+}
+
+package "Warstwa danych" {
+  database "PostgreSQL\n(Primary)" as PgPrimary
+  database "PostgreSQL\n(Read Replica)" as PgReplica
+  database "Redis\n(broker + cache)" as Redis
+}
+
+package "Warstwa obserwowalności" {
+  node "Prometheus" as Prometheus
+  node "Grafana" as Grafana
+  node "OpenTelemetry\nCollector" as OtelCollector
+  node "Centralny system\nlogów organizacji" as CentralLogs
+}
+
+node "Magazyn sekretów\n(Vault / Azure Key Vault /\nrozwiązanie wewnętrzne)" as Vault
+
+cloud "Platforma BI" {
+  node "Power BI Report Server\n(pbi.bank.com.pl)" as PBI
+  node "SSRS / Report Server\n(bgkssrs)" as SSRS
+}
+
+database "Hurtownia danych\n(SQL Server)" as DWH
+
+cloud "Dostawca modelu AI\n(Azure OpenAI —\ndzierżawa organizacji,\nopcjonalnie on-prem)" as AIProvider
+
+' --- Połączenia ---
+LB --> APIPods : TLS
+LB --> GUIPods : TLS
+
+APIPods --> PgPrimary : SQL (async, connection pool)
+APIPods --> PgReplica : SQL (odczyt, dashboard)
+APIPods --> Redis : cache / kolejka (enqueue)
+APIPods --> Vault : pobranie connection stringu
+
+SchedulerPod --> Redis : enqueue zadań (Celery)
+SchedulerPod --> PgPrimary : odczyt harmonogramów
+
+Redis --> WorkerPods : dystrybucja zadań (Celery)
+WorkerPods --> PgPrimary : zapis wyników
+WorkerPods --> Vault : pobranie konta technicznego
+WorkerPods --> PBI : Browser Automation (Playwright)\n+ REST API / XMLA (TLS, SSO)
+WorkerPods --> SSRS : Browser Automation (Playwright)\n+ Web Services (TLS, SSO)
+WorkerPods --> DWH : zapytania SQL\n(konto techniczne, least privilege)
+WorkerPods --> AIProvider : wywołania modelu\n(TLS, dane zminimalizowane)
+
+APIPods --> Prometheus : /metrics
+WorkerPods --> Prometheus : /metrics
+SchedulerPod --> Prometheus : /metrics
+Prometheus --> Grafana : źródło danych
+
+APIPods --> OtelCollector : trace'y
+WorkerPods --> OtelCollector : trace'y
+
+APIPods --> CentralLogs : logi JSON
+WorkerPods --> CentralLogs : logi JSON
+
+note bottom of WorkerPods
+  Jedyny komponent z bezpośrednim dostępem
+  sieciowym do Platformy BI i hurtowni danych.
+  API i GUI nie mają takiego dostępu —
+  cały ruch do systemów zewnętrznych przechodzi
+  przez warstwę workerów (defense-in-depth).
+end note
+
+@enduml

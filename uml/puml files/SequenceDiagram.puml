@@ -1,0 +1,137 @@
+' ============================================================================
+' ARGUS — Diagram sekwencji (Sequence Diagram)
+' ============================================================================
+' OPIS:
+' Diagram przedstawia scenariusz "Ręczne uruchomienie testu dla raportu"
+' (UC-08, POST /api/v1/reports/{report_id}/test-executions z 08_API.md),
+' pokazując pełną interakcję między komponentami: GUI → API → Test
+' Orchestrator → warstwa connectorów/ekstrakcji → silniki walidacji →
+' repozytorium wyników → moduł AI (asynchronicznie) → Notification Service,
+' aż po odświeżenie statusu w GUI przez odpytywanie (polling).
+'
+' UZASADNIENIE PROJEKTOWE:
+' Wywołanie AI Analysis Engine jest zamodelowane jako komunikat asynchroniczny
+' (strzałka otwarta, "->>" z activate/deactivate poza główną osią czasu
+' odpowiedzi HTTP) — celowo, aby pokazać, że odpowiedź API do użytkownika
+' (202 Accepted / status przebiegu) NIE czeka na zakończenie generowania
+' interpretacji AI, zgodnie z zasadą non-blocking z 06_AI_Module.md.
+' Interakcja z ConnectorFactory jest pokazana jako osobny krok (a nie
+' bezpośrednie wywołanie konkretnego connectora przez Test Orchestrator),
+' aby zilustrować w praktyce Dependency Inversion — Test Orchestrator zna
+' wyłącznie interfejs IReportConnector, wybór konkretnej implementacji
+' (Power BI / SSRS) jest hermetyzowany w fabryce (03_Architecture.md,
+' sekcja 3.1). Test Definition Engine jest pokazany jako wywoływany
+' wcześniej, w momencie zapisu Validation Profile (nie w tym scenariuszu
+' wykonania) — dla czytelności pominięty na tym diagramie i pokazany
+' domyślnie w opisie tekstowym UC-03/UC-04 w 04_Functional_Requirements.md.
+' ============================================================================
+
+@startuml SequenceDiagram
+
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 11
+skinparam sequence {
+  ArrowColor #2C3E50
+  LifeLineBorderColor #2C3E50
+  ParticipantBackgroundColor #EAF2F8
+  ParticipantBorderColor #2C3E50
+  ActorBackgroundColor #FDEBD0
+}
+
+title ARGUS — Sekwencja: Ręczne uruchomienie testu raportu (UC-08)
+
+actor "Analityk /\nAdministrator" as User
+participant "Dashboard\n(React GUI)" as GUI
+participant "ARGUS API\n(FastAPI)" as API
+participant "Test\nOrchestrator" as Orch
+participant "Connector\nFactory" as Factory
+participant "IReportConnector\n(np. SSRSConnector)" as Connector
+participant "Browser\nAutomation Engine" as Browser
+participant "Value Extraction\nEngine" as Extract
+participant "SQL Validation\nEngine" as SqlEngine
+database   "Hurtownia\ndanych" as DWH
+participant "Validation\nEngine" as Valid
+participant "Results\nRepository" as Results
+participant "AI Analysis\nEngine" as AI
+participant "Notification\nService" as Notify
+
+User -> GUI : Kliknij "Uruchom test"
+GUI -> API : POST /reports/{id}/test-executions\n(Idempotency-Key)
+activate API
+
+API -> Orch : runTestExecution(report_id)
+activate Orch
+
+Orch -> Factory : getConnector(platform_type)
+activate Factory
+Factory --> Orch : IReportConnector (instancja)
+deactivate Factory
+
+Orch -> Connector : open_report(report_ref)
+activate Connector
+Connector -> Browser : navigate + wait_for_render
+activate Browser
+Browser --> Connector : RenderedReportHandle
+deactivate Browser
+Connector --> Orch : RenderedReportHandle\n(status: dostępny)
+deactivate Connector
+
+Orch -> Extract : extract(handle, extraction_config)
+activate Extract
+note right of Extract
+  Wewnętrzny łańcuch fallback:
+  API/model danych → DOM/Accessibility
+  → Export → Computer Vision → OCR
+  (patrz uml/ActivityDiagram.puml)
+end note
+Extract --> Orch : ExtractedValue\n(value, confidence_score, method)
+deactivate Extract
+
+Orch -> SqlEngine : execute(sql_validation_query)
+activate SqlEngine
+SqlEngine -> DWH : SELECT ... (zapytanie parametryzowane)
+activate DWH
+DWH --> SqlEngine : wynik zapytania
+deactivate DWH
+SqlEngine --> Orch : sql_value
+deactivate SqlEngine
+
+Orch -> Valid : evaluate(report_value, sql_value,\ntolerance, business_rules)
+activate Valid
+Valid --> Orch : TestResult(status, deviation)
+deactivate Valid
+
+Orch -> Results : save(TestExecution, TestResult[])
+activate Results
+Results --> Orch : execution_id
+deactivate Results
+
+Orch --> API : execution_id, overall_status
+deactivate Orch
+
+API --> GUI : 202 Accepted\n{execution_id, status: "RUNNING"|"DONE"}
+deactivate API
+
+GUI --> User : Potwierdzenie uruchomienia
+
+Orch ->> AI : (async) analyze(execution_id)\n[tylko gdy status != PASS]
+activate AI
+AI -> Results : pobierz historię i kontekst\n(READ ONLY)
+AI --> Results : AIInsight (evidence-based)
+Results -> Notify : trigger (status != PASS)
+activate Notify
+Notify --> Notify : deduplikacja + wysyłka
+deactivate Notify
+deactivate AI
+
+...po chwili...
+
+GUI -> API : GET /test-executions/{id}/status\n(polling)
+activate API
+API --> GUI : status: DONE, overall_status,\nai_insight_available
+deactivate API
+GUI --> User : Wyświetl wynik + link\ndo interpretacji AI
+
+@enduml

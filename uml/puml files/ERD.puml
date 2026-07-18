@@ -1,0 +1,203 @@
+' ============================================================================
+' ARGUS — Diagram encji (Entity Relationship Diagram — ERD)
+' ============================================================================
+' OPIS:
+' Diagram przedstawia logiczny model danych systemu opisany w 07_Data_Model.md
+' — 13 encji wraz z atrybutami kluczowymi i kardynalnościami relacji,
+' zaimplementowany docelowo w PostgreSQL (SQLAlchemy + Alembic, patrz
+' 09_Python_Architecture.md).
+'
+' UZASADNIENIE PROJEKTOWE:
+' ValidationProfile jest modelowany w relacji 1:N względem Report (a nie 1:1)
+' celowo — każda zmiana konfiguracji testowej tworzy nową wersję profilu
+' zamiast nadpisywać poprzednią, co jest fundamentem wymogu audytowalności
+' (NFR-C-01, FR-016). Analogicznie TestExecution przechowuje FK zarówno do
+' Report, jak i do konkretnej wersji ValidationProfile użytej w danym
+' przebiegu — pozwala to odtworzyć post factum dokładnie, jaka konfiguracja
+' testowa obowiązywała w momencie wykonania, nawet jeśli profil został
+' później zmieniony (kluczowe dla audytu compliance w instytucji finansowej).
+' HealthScoreSnapshot jest celowo zdenormalizowaną tabelą agregującą
+' (a nie widokiem liczonym on-the-fly z TestResult) — decyzja podyktowana
+' wymogiem wydajnościowym NFR-P-05 (ładowanie Dashboardu ≤2s przy 1000
+' raportów). AIInsight ma FK wyłącznie do TestExecution (nie do TestResult
+' ani nie ma prawa zapisu do statusu) — odzwierciedla na poziomie modelu
+' danych zasadę nadrzędną z 06_AI_Module.md: AI nie ma technicznej
+' możliwości modyfikacji werdyktu.
+' ============================================================================
+
+@startuml ERD
+
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName Helvetica
+skinparam defaultFontSize 11
+skinparam linetype ortho
+skinparam class {
+  BackgroundColor #EAF2F8
+  BorderColor #2C3E50
+  ArrowColor #2C3E50
+}
+
+title ARGUS — Model danych (ERD, patrz 07_Data_Model.md)
+
+entity "BusinessArea" as BusinessArea {
+  * id : UUID <<PK>>
+  --
+  name : varchar
+  description : text
+  owner : varchar
+}
+
+entity "Report" as Report {
+  * id : UUID <<PK>>
+  --
+  name : varchar
+  platform_type : enum(POWER_BI, SSRS)
+  url : varchar
+  # business_area_id : UUID <<FK>>
+  owner : varchar
+  is_active : boolean
+  created_at : timestamp
+  updated_at : timestamp
+}
+
+entity "ValidationProfile" as ValidationProfile {
+  * id : UUID <<PK>>
+  --
+  # report_id : UUID <<FK>>
+  version : integer
+  is_active : boolean
+  schedule_cron : varchar
+  # created_by : UUID <<FK Users>>
+  created_at : timestamp
+  change_reason : text
+}
+
+entity "TestDefinition" as TestDefinition {
+  * id : UUID <<PK>>
+  --
+  # validation_profile_id : UUID <<FK>>
+  name : varchar
+  type : enum(SQL_COMPARISON, FIELD_VALUE,\nBUSINESS_RULE, AVAILABILITY)
+  extraction_config : jsonb
+  tolerance_abs : numeric
+  tolerance_pct : numeric
+  is_active : boolean
+}
+
+entity "SqlValidationQuery" as SqlValidationQuery {
+  * id : UUID <<PK>>
+  --
+  # test_definition_id : UUID <<FK>>
+  sql_text : text
+  data_source_ref : varchar
+  expected_result_mapping : jsonb
+}
+
+entity "BusinessRule" as BusinessRule {
+  * id : UUID <<PK>>
+  --
+  # test_definition_id : UUID <<FK>>
+  rule_type : enum(SUM_CHECK, RANGE_CHECK,\nTREND_DEVIATION, NON_NEGATIVE)
+  configuration : jsonb
+}
+
+entity "TestExecution" as TestExecution {
+  * id : UUID <<PK>>
+  --
+  # report_id : UUID <<FK>>
+  # validation_profile_id : UUID <<FK>>
+  triggered_by : varchar
+  started_at : timestamp
+  finished_at : timestamp
+  overall_status : enum(PASS, FAIL, WARNING, ERROR)
+  platform_availability_status : varchar
+}
+
+entity "TestResult" as TestResult {
+  * id : UUID <<PK>>
+  --
+  # test_execution_id : UUID <<FK>>
+  # test_definition_id : UUID <<FK>>
+  status : enum(PASS, FAIL, WARNING, ERROR)
+  report_value : varchar
+  sql_value : varchar
+  deviation_abs : numeric
+  deviation_pct : numeric
+  extraction_method : varchar
+  confidence_score : float
+  raw_evidence_ref : varchar
+}
+
+entity "HealthScoreSnapshot" as HealthScoreSnapshot {
+  * id : UUID <<PK>>
+  --
+  # report_id : UUID <<FK>>
+  snapshot_date : date
+  health_score : float
+  pass_count : integer
+  fail_count : integer
+  warning_count : integer
+}
+
+entity "AIInsight" as AIInsight {
+  * id : UUID <<PK>>
+  --
+  # test_execution_id : UUID <<FK>>
+  explanation : text
+  evidence : jsonb
+  probable_causes : jsonb
+  suggested_actions : jsonb
+  cluster_id : UUID
+  model_version : varchar
+  prompt_version : varchar
+  user_feedback : varchar
+  created_at : timestamp
+}
+
+entity "Notification" as Notification {
+  * id : UUID <<PK>>
+  --
+  # test_execution_id : UUID <<FK>>
+  channel : varchar
+  recipient : varchar
+  sent_at : timestamp
+  status : varchar
+}
+
+entity "User" as User {
+  * id : UUID <<PK>>
+  --
+  username : varchar
+  email : varchar
+  role : enum(ADMINISTRATOR, ANALYST_OWNER, VIEWER)
+}
+
+entity "AuditLogEntry" as AuditLogEntry {
+  * id : UUID <<PK>>
+  --
+  # actor_id : UUID <<FK Users, nullable>>
+  action : varchar
+  entity_type : varchar
+  entity_id : UUID
+  before_state : jsonb
+  after_state : jsonb
+  timestamp : timestamp
+}
+
+BusinessArea ||--o{ Report : "grupuje"
+Report ||--o{ ValidationProfile : "wersje w czasie"
+ValidationProfile ||--o{ TestDefinition : "zawiera"
+TestDefinition |o--o| SqlValidationQuery : "opcjonalnie"
+TestDefinition |o--o| BusinessRule : "opcjonalnie"
+Report ||--o{ TestExecution : "ma przebiegi"
+ValidationProfile ||--o{ TestExecution : "wersja użyta w"
+TestExecution ||--o{ TestResult : "zawiera wyniki"
+TestDefinition ||--o{ TestResult : "generuje"
+TestExecution ||--o{ AIInsight : "opcjonalnie interpretowany przez"
+TestExecution ||--o{ Notification : "wyzwala"
+Report ||--o{ HealthScoreSnapshot : "agreguje w czasie"
+User ||--o{ ValidationProfile : "tworzy (created_by)"
+User |o--o{ AuditLogEntry : "autor zdarzenia"
+
+@enduml
