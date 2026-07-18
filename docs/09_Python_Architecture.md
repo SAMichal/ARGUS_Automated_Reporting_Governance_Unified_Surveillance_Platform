@@ -1,7 +1,7 @@
 # 09. Python Architecture
 
-**Projekt:** ARGUS — Automated Reporting Governance & Unified Surveillance Platform
-**Dokument:** Architektura kodu Python i stack technologiczny
+**Projekt:** ARGUS — Automated Reporting Governance & Unified Surveillance Platform \
+**Dokument:** Architektura kodu Python i stack technologiczny \
 **Odbiorcy:** Zespół Deweloperski, Architektura IT
 
 ---
