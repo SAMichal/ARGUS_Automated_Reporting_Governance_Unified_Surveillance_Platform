@@ -1,7 +1,7 @@
 # 11. Roadmap
 
-**Projekt:** ARGUS — Automated Reporting Governance & Unified Surveillance Platform
-**Dokument:** Plan wdrożenia w fazach
+**Projekt:** ARGUS — Automated Reporting Governance & Unified Surveillance Platform \
+**Dokument:** Plan wdrożenia w fazach \
 **Odbiorcy:** Project Manager, Sponsor, Architektura IT, Zespół Deweloperski
 
 ---
