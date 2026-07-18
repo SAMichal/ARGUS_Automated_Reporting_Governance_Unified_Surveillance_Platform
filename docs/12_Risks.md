@@ -1,7 +1,7 @@
 # 12. Risks
 
-**Projekt:** ARGUS — Automated Reporting Governance & Unified Surveillance Platform
-**Dokument:** Rejestr ryzyk
+**Projekt:** ARGUS — Automated Reporting Governance & Unified Surveillance Platform \
+**Dokument:** Rejestr ryzyk \
 **Odbiorcy:** Sponsor, Project Manager, Architektura IT, Security Office
 
 ---
