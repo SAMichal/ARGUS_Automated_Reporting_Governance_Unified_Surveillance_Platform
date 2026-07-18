@@ -1,7 +1,7 @@
 # 10. Deployment
 
-**Projekt:** ARGUS — Automated Reporting Governance & Unified Surveillance Platform
-**Dokument:** Środowiska, CI/CD, infrastruktura, Disaster Recovery
+**Projekt:** ARGUS — Automated Reporting Governance & Unified Surveillance Platform \
+**Dokument:** Środowiska, CI/CD, infrastruktura, Disaster Recovery \
 **Odbiorcy:** Architektura IT, Zespół Infrastruktury/Platform, Security Office
 
 ---
