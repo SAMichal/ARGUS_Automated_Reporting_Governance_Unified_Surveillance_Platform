@@ -1,7 +1,7 @@
 # 07. Data Model
 
-**Projekt:** ARGUS — Automated Reporting Governance & Unified Surveillance Platform
-**Dokument:** Model danych i słownik encji
+**Projekt:** ARGUS — Automated Reporting Governance & Unified Surveillance Platform \
+**Dokument:** Model danych i słownik encji \
 **Odbiorcy:** Zespół Deweloperski, DBA, Architektura Danych
 
 ---
