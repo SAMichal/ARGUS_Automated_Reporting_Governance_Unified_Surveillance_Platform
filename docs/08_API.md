@@ -1,7 +1,7 @@
 # 08. API
 
-**Projekt:** ARGUS — Automated Reporting Governance & Unified Surveillance Platform
-**Dokument:** Projekt API REST
+**Projekt:** ARGUS — Automated Reporting Governance & Unified Surveillance Platform \
+**Dokument:** Projekt API REST \
 **Odbiorcy:** Zespół Deweloperski, Zespoły integrujące się z ARGUS
 
 ---
